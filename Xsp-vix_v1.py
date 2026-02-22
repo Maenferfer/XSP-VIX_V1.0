@@ -48,6 +48,26 @@ def obtener_datos():
         else: vals[k] = {"actual": 0, "apertura": 0}
     return vals
 
+def calcular_niveles(precio, vix, delta_target):
+    # Cálculo basado en volatilidad implícita (VIX) para 1 día
+    sigma_1d = (vix / 100) / (252**0.5)
+    # Delta 5 (aprox 1.65s) | Delta 3 (aprox 1.88s)
+    mult = 1.65 if delta_target == 5 else 1.88
+    distancia = precio * sigma_1d * mult
+    
+    ancho = 3 if vix < 14 else 5
+    
+    vendido_up = round(precio + distancia)
+    comprado_up = vendido_up + ancho
+    vendido_down = round(precio - distancia)
+    comprado_down = vendido_down - ancho
+    
+    return {
+        "v_up": vendido_up, "c_up": comprado_up,
+        "v_down": vendido_down, "c_down": comprado_down,
+        "ancho": ancho, "dist": round(distancia, 2)
+    }
+
 # EJECUCIÓN
 if st.button('🚀 Analizar Mercado'):
     ahora = datetime.now(ZONA_HORARIA).time()
@@ -56,7 +76,6 @@ if st.button('🚀 Analizar Mercado'):
 
     noticias = check_noticias_tactico(FINNHUB_API_KEY)
     
-    # Mostrar Noticias
     if noticias["eventos"]:
         with st.expander("🔔 Eventos Críticos Hoy", expanded=True):
             for ev in noticias["eventos"]: st.write(f"• {ev}")
@@ -64,47 +83,54 @@ if st.button('🚀 Analizar Mercado'):
     if noticias["bloqueo"]:
         st.error("🚫 BLOQUEO TOTAL: Noticia en horario operativo. NO OPERAR.")
     else:
-        with st.spinner('Calculando tramos...'):
+        with st.spinner('Calculando tramos y strikes...'):
             d = obtener_datos()
             xsp, vix, vvix = d["XSP"]["actual"], d["VIX"]["actual"], d["VVIX"]["actual"]
             rango_ap = abs((xsp - d["XSP"]["apertura"]) / d["XSP"]["apertura"] * 100) if d["XSP"]["apertura"] != 0 else 0
 
-            # Métricas Principales
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("XSP", f"{xsp:.2f}", f"{rango_ap:.2f}%")
             c2.metric("VIX", f"{vix:.2f}")
             c3.metric("VVIX", f"{vvix:.2f}")
             c4.metric("VIX1D", f"{d['VIX1D']['actual']:.2f}")
 
-            # Cálculo de gestión
-            ancho_alas = 5
-            riesgo_neto_contrato = (ancho_alas * (2/3)) * 100 
-            num_contratos = max(1, int((capital * 0.02) // riesgo_neto_contrato))
-            beneficio_obj = num_contratos * (ancho_alas / 3) * 100
-
             st.divider()
 
             # LÓGICA DE ESTRATEGIA
-            if noticias["tipo"] == "TARDE_FED":
-                st.success(f"🎯 TRAMO 1 (ESPECIAL): IRON CONDOR PRE-FED")
-                st.error(f"⚠️ CERRAR POSICIÓN ANTES DE LAS 19:30 ESP (Noticia tarde)")
-                st.write(f"**Beneficio Objetivo:** {beneficio_obj:.2f}€ | **Contratos:** {num_contratos}")
-            
-            elif noticias["tipo"] == "PRE_MERCADO":
-                st.info(f"🎯 TRAMO 2 (POST-NOTICIA): SPREAD VERTICAL")
-                dir_t = "ALCISTA (Vender Put)" if xsp > d["XSP"]["apertura"] else "BAJISTA (Vender Call)"
-                st.write(f"**Dirección:** {dir_t} | **Beneficio Objetivo:** {beneficio_obj:.2f}€")
+            if noticias["tipo"] == "TARDE_FED" or (d["VIX1D"]["actual"] < d["VIX9D"]["actual"] < vix and vix < 16 and vvix < 88 and rango_ap < 0.40):
+                n = calcular_niveles(xsp, vix, 5)
+                riesgo_neto = (n["ancho"] * (2/3)) * 100 
+                num_contratos = max(1, int((capital * 0.02) // riesgo_neto))
+                beneficio_obj = num_contratos * (n["ancho"] / 3) * 100
 
-            elif d["VIX1D"]["actual"] < d["VIX9D"]["actual"] < vix and vix < 16 and vvix < 88 and rango_ap < 0.40:
-                st.success(f"🎯 TRAMO 1: IRON CONDOR ESTÁNDAR (Calma)")
-                st.write(f"**Beneficio Objetivo:** {beneficio_obj:.2f}€ | **Contratos:** {num_contratos}")
+                st.success(f"🎯 TRAMO 1: IRON CONDOR (Delta 5)")
+                if noticias["tipo"] == "TARDE_FED": st.error("⚠️ CERRAR ANTES DE LAS 19:30 ESP (FED Hoy)")
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.info(f"**Lado CALL (Arriba)**\n\n• Vender: **{n['v_up']}**\n\n• Comprar: **{n['c_up']}**")
+                with col_b:
+                    st.info(f"**Lado PUT (Abajo)**\n\n• Vender: **{n['v_down']}**\n\n• Comprar: **{n['c_down']}**")
+                
+                st.write(f"**Detalles:** Distancia {n['dist']} pts | Alas {n['ancho']} pts | Contratos: {num_contratos} | **Beneficio: {beneficio_obj:.2f}€**")
 
-            elif d["VIX1D"]["actual"] > d["VIX9D"]["actual"] or vvix > 105 or rango_ap > 0.75:
-                st.info(f"🎯 TRAMO 2: SPREAD VERTICAL (Tendencia)")
-                st.write(f"**Beneficio Objetivo:** {beneficio_obj:.2f}€ | **Contratos:** {num_contratos}")
-            
+            elif noticias["tipo"] == "PRE_MERCADO" or (d["VIX1D"]["actual"] > d["VIX9D"]["actual"] or vvix > 105 or rango_ap > 0.75):
+                n = calcular_niveles(xsp, vix, 3)
+                riesgo_neto = (n["ancho"] * (2/3)) * 100
+                num_contratos = max(1, int((capital * 0.02) // riesgo_neto))
+                beneficio_obj = num_contratos * (n["ancho"] / 3) * 100
+                
+                es_alcista = xsp > d["XSP"]["apertura"]
+                st.info(f"🎯 TRAMO 2: SPREAD VERTICAL (Delta 3)")
+                
+                if es_alcista:
+                    st.success(f"**Bull Put Spread (Alcista)**\n\n• Vender: **{n['v_down']}** | Comprar: **{n['c_down']}**")
+                else:
+                    st.error(f"**Bear Call Spread (Bajista)**\n\n• Vender: **{n['v_up']}** | Comprar: **{n['c_up']}**")
+                
+                st.write(f"**Detalles:** Distancia {n['dist']} pts | Alas {n['ancho']} pts | Contratos: {num_contratos} | **Beneficio: {beneficio_obj:.2f}€**")
+
             else:
                 st.warning("⚖️ SIN SEÑAL CLARA: El mercado no cumple parámetros de alta probabilidad.")
 
-st.sidebar.caption("Datos con 15 min de retraso (Yahoo Finance)")
-      
+st.sidebar.caption("Monitor XSP 0DTE - Datos Yahoo Finance")
