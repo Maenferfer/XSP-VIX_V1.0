@@ -4,6 +4,16 @@ import pandas as pd
 from datetime import datetime, time, date
 import requests
 import pytz
+import streamlit as st
+from PIL import Image
+
+# Asegúrate de tener el archivo logo.png en la misma carpeta
+img = Image.open("logo.png")
+st.set_page_config(
+    page_title="Mi App",
+    page_icon=img,
+    layout="centered"
+)
 
 # --- CONFIGURACIÓN ---
 FINNHUB_API_KEY = 'd6d2nn1r01qgk7mkblh0d6d2nn1r01qgk7mkblhg'
